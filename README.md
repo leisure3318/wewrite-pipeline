@@ -1,0 +1,296 @@
+# wewrite-pipeline
+
+全流程公众号发布助手——从视频字幕到微信草稿箱，只有一个手动节点（图片生成）。
+
+## 它做什么
+
+```
+[你的终端]              [Claude Code]
+yt-article URL slug → 字幕 → 写作 → 提示词生成 → ⏸ 等你放图片 → 格式化 → HTML → 草稿箱
+```
+
+串联的技能链：
+- **wewrite** — 框架选择、素材增强、写作、SEO 验证
+- **baoyu-cover-image** — 封面提示词（5 维度）
+- **baoyu-article-illustrator** — 配图提示词
+- **baoyu-format-markdown** — Markdown 排版和标题优化
+- **baoyu-markdown-to-html** — 渲染为微信兼容 HTML
+- **baoyu-post-to-wechat** — 上传图片并推送草稿箱
+
+每篇文章独立隔离到 `~/wewrite-articles/YYYY-MM-DD-{slug}/`，随时可以中断恢复。
+
+---
+
+## 前置条件
+
+### 必须安装
+
+| 依赖 | 作用 | 检查 | 安装 |
+|------|------|------|------|
+| Claude Code | 运行 skill 的宿主环境 | `claude --version` | [下载](https://claude.ai/code) |
+| Node.js 18+ | 发布脚本运行时（npx tsx） | `node --version` | `brew install node` |
+| wewrite skill | 写作核心 | `ls ~/.claude/skills/wewrite/SKILL.md` | 见下方 |
+| baoyu-skills 插件 | 封面/配图/排版/发布 | `find ~/.claude/plugins/cache/baoyu-skills -name "wechat-api.ts" \| head -1` | 见下方 |
+
+**一键检查所有前置条件**：
+
+```bash
+echo "=== 检查 wewrite-pipeline 前置条件 ===" && \
+echo -n "Claude Code:    " && (claude --version 2>/dev/null | head -1 || echo "❌ 未安装") && \
+echo -n "Node.js:        " && (node --version 2>/dev/null || echo "❌ 未安装") && \
+echo -n "npx:            " && (npx --version 2>/dev/null || echo "❌ 未安装") && \
+echo -n "python3:        " && (python3 --version 2>/dev/null || echo "❌ 未安装") && \
+echo -n "PyYAML:         " && (python3 -c "import yaml; print('ok')" 2>/dev/null || echo "⚠️  pip install pyyaml") && \
+echo -n "wewrite skill:  " && (ls ~/.claude/skills/wewrite/SKILL.md 2>/dev/null && echo "ok" || echo "❌ 未安装") && \
+echo -n "baoyu-skills:   " && (find ~/.claude/plugins/cache/baoyu-skills -name "wechat-api.ts" 2>/dev/null | head -1 | grep -q . && echo "ok" || echo "❌ 未安装") && \
+echo -n "微信凭证:       " && (grep -q WECHAT_APP_ID ~/.baoyu-skills/.env 2>/dev/null && echo "ok" || echo "⚠️  需要配置（见步骤 3）")
+```
+
+#### 安装 wewrite skill
+
+```bash
+cd ~/.claude/skills
+git clone https://github.com/JimLiu/wewrite.git wewrite
+```
+
+#### 安装 baoyu-skills 插件
+
+在 Claude Code 中运行：
+```
+/install baoyu-skills
+```
+或参考 [baoyu-skills 文档](https://github.com/JimLiu/baoyu-skills)。
+
+### 可选（YouTube 字幕下载）
+
+| 工具 | 作用 | 安装 |
+|------|------|------|
+| yt-dlp | 下载 YouTube 字幕文件 | `brew install yt-dlp` |
+| markitdown | VTT 字幕转 Markdown | `pip install markitdown` |
+
+---
+
+## 安装 wewrite-pipeline
+
+### 方式一：symlink（推荐，方便 git pull 更新）
+
+```bash
+git clone https://github.com/yourname/wewrite-pipeline.git ~/Code/wewrite-pipeline
+ln -s ~/Code/wewrite-pipeline ~/.claude/skills/wewrite-pipeline
+```
+
+### 方式二：直接复制
+
+```bash
+git clone https://github.com/yourname/wewrite-pipeline.git ~/.claude/skills/wewrite-pipeline
+```
+
+### 验证安装
+
+新开一个 Claude Code 对话，运行：
+
+```
+/wewrite-pipeline --help
+```
+
+或直接查看 skill 是否出现在列表中：
+
+```
+/skills
+```
+
+看到 `wewrite-pipeline` 就说明安装成功。
+
+---
+
+## 配置
+
+### 1. 微信 API 凭证（必须，仅需配置一次）
+
+先运行一次 `/baoyu-post-to-wechat`，它会引导你完成配置，生成：
+
+```
+~/.baoyu-skills/.env
+```
+
+内容格式：
+```
+WECHAT_APP_ID=wx...
+WECHAT_APP_SECRET=...
+```
+
+wewrite-pipeline 直接复用这份配置，不需要额外设置。
+
+### 2. `yt-article` 函数（仅 YouTube 来源时需要）
+
+在 `~/.zshrc` 末尾添加：
+
+```bash
+function yt-article() {
+  local url=$1
+  local slug=${2:-$(date +%Y-%m-%d)}
+  local outdir="$HOME/wewrite-articles/$slug/00-source"
+  mkdir -p "$outdir"
+  yt-dlp \
+    --cookies "$HOME/.yt-cookies.txt" \
+    --write-auto-sub --sub-lang en \
+    --skip-download --no-playlist \
+    --output "$outdir/%(title)s.%(ext)s" \
+    "$url"
+  for f in "$outdir"/*.vtt; do
+    [ -f "$f" ] && markitdown "$f" -o "${f%.vtt}.md"
+  done
+  echo "✓ 字幕已保存到 $outdir"
+}
+```
+
+```bash
+source ~/.zshrc
+```
+
+### 3. YouTube Cookie（仅 YouTube 来源时需要，有效期约 2-4 周）
+
+1. 安装 Chrome 插件「Get cookies.txt LOCALLY」
+2. 登录 YouTube，用插件导出 cookies
+3. 保存到 `~/.yt-cookies.txt`
+
+过期标志：运行 `yt-article` 时报 "Sign in" 错误 → 重新导出 cookie 覆盖即可。
+
+---
+
+## 使用
+
+### 从本地字幕文件开始
+
+```bash
+# 在 Claude Code 中
+/wewrite-pipeline ~/Downloads/transcript.md my-article-slug
+```
+
+### 从 YouTube 视频开始
+
+**第一步（你的终端，约 10 秒）**：
+```bash
+yt-article "https://youtube.com/watch?v=6MBq1paspVU" "2026-04-28-Obsidian-ClaudeCode"
+```
+
+**第二步（Claude Code）**：
+```bash
+/wewrite-pipeline ~/wewrite-articles/2026-04-28-Obsidian-ClaudeCode
+# 或直接传 YouTube URL，pipeline 会告诉你运行命令
+/wewrite-pipeline "https://youtube.com/watch?v=xxx" "2026-05-ai-features"
+```
+
+### 中断后恢复
+
+```bash
+/wewrite-pipeline ~/wewrite-articles/2026-05-01-my-article
+```
+
+pipeline 读取 `meta.yaml` 中的 `status`，从上次停止的地方继续。
+
+---
+
+## 流程详解
+
+```
+Step 0  初始化目录           ~/wewrite-articles/YYYY-MM-DD-slug/ 建立完整结构
+Step 1  wewrite 写作         transcript → 原稿 draft.md（含 SEO 验证）
+Step 2  图片提示词           封面 → 02-cover/prompts/，配图 → 03-images/prompts/
+        ↓
+⏸ 暂停  等你手动生成图片     把图片放到对应目录，说「继续」
+        ↓
+Step 4  格式化 + 插图        插入图片引用，baoyu-format-markdown 优化排版
+Step 5  转 HTML             baoyu-markdown-to-html 渲染
+Step 6  发布草稿箱           npx tsx wechat-api.ts 推送，输出 media_id
+```
+
+**关于图片暂停点**：
+
+pipeline 生成提示词后，你需要：
+1. 打开 Gemini（gemini.google.com）或其他图片生成工具
+2. 把 `02-cover/prompts/` 和 `03-images/prompts/` 里的提示词粘贴进去
+3. 下载图片，分别放到 `02-cover/cover.jpeg` 和 `03-images/*.jpeg`
+4. 在 Claude Code 里说「继续」
+
+只有封面图是发布的必须项，配图可以先跳过（微信允许无配图文章）。
+
+---
+
+## 文章目录结构
+
+```
+~/wewrite-articles/
+└── 2026-05-01-my-topic/
+    ├── meta.yaml              ← 流程状态，随时可查
+    ├── 00-source/
+    │   └── transcript.md      ← 原始字幕（markitdown 转换后）
+    ├── 01-article/
+    │   ├── draft.md           ← wewrite 原稿
+    │   ├── draft-formatted.md ← 格式化后
+    │   └── draft-formatted.html
+    ├── 02-cover/
+    │   ├── prompts/
+    │   │   └── 01-cover-my-topic.md
+    │   └── cover.jpeg         ← 你手动生成后放这里
+    └── 03-images/
+        ├── outline.md
+        ├── prompts/
+        │   ├── 01-infographic-concept.md
+        │   └── 02-scene-example.md
+        └── 01-infographic-concept.jpeg   ← 你手动放这里
+```
+
+`meta.yaml` 示例：
+```yaml
+slug: my-topic
+date: "2026-05-01"
+source: ~/Downloads/transcript.md
+status: published          # init / drafted / prompts_ready / images_ready / formatted / html_ready / published
+title: "文章标题"
+summary: "一句话摘要"
+media_id: abc123xyz
+published_at: "2026-05-01T14:30:00+08:00"
+```
+
+---
+
+## 已知限制
+
+| 限制 | 原因 | 计划 |
+|------|------|------|
+| 图片需手动生成 | 暂无图片生成 API | 接通 Gemini API 后可全自动 |
+| YouTube 字幕需在用户终端下载 | Claude Code 沙箱 IP 被 YouTube 封锁 | 有官方 YouTube Data API key 后可解决 |
+| bun 不能发布 | 系统防火墙拦截 bun 进程外网 | 已改用 npx tsx；或给 bun 开放防火墙 |
+
+---
+
+## 故障排查
+
+**找不到 wechat-api.ts**
+```bash
+find ~/.claude/plugins/cache/baoyu-skills -name "wechat-api.ts"
+```
+空结果 → baoyu-skills 插件未安装或路径变了。
+
+**meta_id 提取失败**
+手动查看 npx tsx 的输出，找 `"media_id"` 行，手动更新 `meta.yaml`。
+
+**wewrite 输出文件找不到**
+手动把 `~/.claude/skills/wewrite/output/` 里最新的 `.md` 复制到
+`~/wewrite-articles/{slug}/01-article/draft.md`，然后恢复 pipeline。
+
+**图片相对路径在 HTML 中失效**
+确保配图文件名和 `outline.md` 里的 Filename 字段一致。
+
+---
+
+## 分享给其他用户
+
+skill 没有任何硬编码路径，可以直接分享使用。对方按「前置条件 → 安装 → 配置」章节操作即可，不需要修改任何代码。
+
+---
+
+## 版权
+
+MIT License. 基于 [wewrite](https://github.com/JimLiu/wewrite) 和 [baoyu-skills](https://github.com/JimLiu/baoyu-skills)。
