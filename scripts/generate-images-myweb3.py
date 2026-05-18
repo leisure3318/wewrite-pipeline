@@ -64,7 +64,12 @@ def http_json(url: str, payload: dict[str, Any], headers: dict[str, str], timeou
     request = urllib.request.Request(
         url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json", **headers},
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "curl/8.7.1",
+            **headers,
+        },
         method="POST",
     )
     try:
@@ -134,16 +139,19 @@ def existing_image(path_without_suffix: Path) -> Path | None:
     return None
 
 
-def update_meta(article_dir: Path, **values: Any) -> None:
+def update_meta(article_dir: Path, drop_keys: set[str] | None = None, **values: Any) -> None:
     meta_path = article_dir / "meta.yaml"
     if not meta_path.exists():
         return
+    drop_keys = drop_keys or set()
     lines = meta_path.read_text(encoding="utf-8").splitlines()
     rendered = {key: render_yaml_value(value) for key, value in values.items()}
     seen: set[str] = set()
     updated: list[str] = []
     for line in lines:
         key = line.split(":", 1)[0].strip() if ":" in line and not line.startswith((" ", "-")) else ""
+        if key in drop_keys:
+            continue
         if key in rendered:
             updated.append(f"{key}: {rendered[key]}")
             seen.add(key)
@@ -190,7 +198,7 @@ def generate_from_prompt(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate cover and body images for a wewrite-pipeline article.")
     parser.add_argument("article_dir", type=Path)
-    parser.add_argument("--env-file", type=Path, default=Path(".env"))
+    parser.add_argument("--env-file", type=Path, default=None)
     parser.add_argument("--api-base", default="")
     parser.add_argument("--api-key", default="")
     parser.add_argument("--model", default="")
@@ -198,21 +206,43 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-size", default="")
     parser.add_argument("--retries", type=int, default=2)
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--cover-only", action="store_true", help="Generate only the cover image.")
+    parser.add_argument("--body-only", action="store_true", help="Generate only body images.")
     return parser.parse_args()
+
+
+def default_env_files() -> list[Path]:
+    paths = [Path(".env")]
+    xdg_config = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_config:
+        paths.append(Path(xdg_config) / "baoyu-skills" / ".env")
+    else:
+        paths.append(Path.home() / ".config" / "baoyu-skills" / ".env")
+    paths.append(Path.home() / ".baoyu-skills" / ".env")
+    return paths
+
+
+def read_env_files(paths: list[Path]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for path in paths:
+        values.update(read_env_file(path.expanduser()))
+    return values
 
 
 def main() -> int:
     args = parse_args()
+    if args.cover_only and args.body_only:
+        raise RuntimeError("--cover-only and --body-only cannot be used together")
     article_dir = args.article_dir.expanduser().resolve()
-    env_file = read_env_file(args.env_file.expanduser())
+    env_file = read_env_files([args.env_file] if args.env_file else default_env_files())
     api_base = args.api_base or env_value("IMAGE_API_BASE", env_file, DEFAULT_API_BASE)
     api_key = args.api_key or env_value("IMAGE_API_KEY", env_file) or env_value("MYWEB3_API_KEY", env_file)
     model = args.model or env_value("IMAGE_MODEL", env_file, DEFAULT_MODEL)
     cover_size = normalize_image_size(args.cover_size or env_value("COVER_IMAGE_SIZE", env_file, DEFAULT_COVER_SIZE))
     image_size = normalize_image_size(args.image_size or env_value("ARTICLE_IMAGE_SIZE", env_file, DEFAULT_IMAGE_SIZE))
 
-    cover_prompts = prompt_files(article_dir / "02-cover" / "prompts")
-    body_prompts = prompt_files(article_dir / "03-images" / "prompts")
+    cover_prompts = [] if args.body_only else prompt_files(article_dir / "02-cover" / "prompts")
+    body_prompts = [] if args.cover_only else prompt_files(article_dir / "03-images" / "prompts")
     if not cover_prompts and not body_prompts:
         raise RuntimeError("No prompt files found under 02-cover/prompts or 03-images/prompts")
 
@@ -255,9 +285,14 @@ def main() -> int:
 
         update_meta(
             article_dir,
+            drop_keys={"image_error"},
             status="images_ready",
-            cover_images=bool(results["cover"]),
-            body_images=len(results["body_images"]),
+            cover_images=bool(results["cover"]) or bool(existing_image(article_dir / "02-cover" / "cover")),
+            body_images=(
+                len(results["body_images"])
+                if not args.cover_only
+                else len([path for path in (article_dir / "03-images").iterdir() if path.suffix.lower() in IMAGE_SUFFIXES])
+            ),
             image_backend="myweb3",
             image_model=model,
         )

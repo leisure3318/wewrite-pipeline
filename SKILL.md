@@ -50,6 +50,7 @@ user_invocable: true
 - **图片 API 配置**：Step 3 读取 `IMAGE_API_KEY` 或 `MYWEB3_API_KEY`；可选 `IMAGE_API_BASE`（默认 `https://api.myweb3.cc/v1`）、`IMAGE_MODEL`（默认 `gpt-image-2`）、`COVER_IMAGE_SIZE`（默认 `1808x768`）、`ARTICLE_IMAGE_SIZE`（默认 `1536x864`）。尺寸会向上取整为 16 的倍数。
 - **网络限制规避**：发布步骤强制使用 `npx --yes tsx` 调用 `wechat-api.ts`，禁止使用 `bun`（bun 出口网络在本环境被系统拦截）。
 - **内容来源隐身硬约束**：YouTube / 字幕 / 访谈 / 文稿只能作为素材来源。除非用户明确要求写观后感、解读、逐字稿或来源评述，公开正文必须写成独立公众号文章，禁止用“看完这个视频 / 视频作者说 / 视频里 / 字幕里 / 作者说”等来源框架。
+- **标题候选硬约束**：Step 1 写完正文后必须增加“标题候选生成 / 标题党优化”小步骤，读取 `baoyu-format-markdown/references/title-formulas.md`，产出 5 个标题候选，并默认选择最强标题写回 frontmatter、H1 和 `meta.yaml`。
 - **路径约定**：本文档中 `{ARTICLE_DIR}` 指当次运行的文章根目录，`{skill_dir}` 指本 SKILL.md 所在目录。
 - **进度追踪**：在 Codex 中优先用 `update_plan` 创建/更新步骤；不可用时用简短进度列表，完成一步标记一步。
 
@@ -83,6 +84,7 @@ $wewrite-pipeline ~/wewrite-articles/2026-05-01-my-topic   # 恢复模式
 ```
 Plan item: "Step 0: 初始化目录"
 Plan item: "Step 1: wewrite 写作"
+Plan item: "Step 1.6: 标题候选生成 / 标题党优化"
 Plan item: "Step 2: 生成图片提示词"
 Plan item: "Step 3: 自动生成图片（myweb3）"
 Plan item: "Step 4: 格式化 + 插图"
@@ -208,6 +210,56 @@ python3 "{skill_dir}/scripts/validate-standalone-article.py" "$ARTICLE_DIR/01-ar
 
 如果校验失败，必须先重写 `draft.md`，让文章以独立观点 / 方法 / 清单呈现；不要继续 Step 2，也不要发布。允许在 frontmatter / meta.yaml 保留 source URL 作为内部追踪信息。
 
+**Step 1.6: 标题候选生成 / 标题党优化**：
+
+在正文确认通过后，必须读取 Baoyu 标题公式参考：
+
+```bash
+TITLE_FORMULAS=$(find ~/.codex/plugins/cache ~/.agents/plugins/cache ~/.claude/plugins/cache ~/.baoyu-skills -path "*/baoyu-format-markdown/references/title-formulas.md" 2>/dev/null | head -1)
+[ -z "$TITLE_FORMULAS" ] && {
+  echo "错误：找不到 baoyu-format-markdown/references/title-formulas.md，不能跳过标题候选步骤。"
+  exit 1
+}
+sed -n '1,220p' "$TITLE_FORMULAS"
+```
+
+基于 `draft.md` 的中心论点、读者痛点和可兑现信息量，自动生成 5 个标题候选：
+
+- 3 个 hook 标题：从 Subversive / Solution / Suspense / Concrete Number / Contrast / Result First / Rhetorical Question / Empathy 中选择最适合文章的公式。
+- 2 个 straightforward 标题：一个描述型，一个结论型。
+- 每个候选必须标注使用的公式和简短理由。
+- 默认选出最强标题（通常更短、更具体、更有点击动机，但必须准确兑现正文内容），不打断流程；只有用户明确要求人工选择时才暂停。
+- 中文公众号标题优先控制在约 30 字以内，避免空泛学术标题和纯震惊党。
+
+把默认选中的标题写回 `{ARTICLE_DIR}/01-article/draft.md` 的 frontmatter `title` 和正文 H1，并同步更新 `meta.yaml`：
+
+```bash
+python3 - "$ARTICLE_DIR/01-article/draft.md" "$ARTICLE_DIR/meta.yaml" "$SELECTED_TITLE" <<'EOF'
+import re, sys
+from pathlib import Path
+import yaml
+
+draft_path = Path(sys.argv[1])
+meta_path = Path(sys.argv[2])
+selected_title = sys.argv[3]
+
+content = draft_path.read_text(encoding="utf-8")
+match = re.match(r"^---\n(.*?)\n---\n?", content, re.DOTALL)
+if not match:
+    raise SystemExit("draft.md missing YAML frontmatter")
+frontmatter = yaml.safe_load(match.group(1)) or {}
+frontmatter["title"] = selected_title
+body = content[match.end():]
+body = re.sub(r"^# .+$", f"# {selected_title}", body, count=1, flags=re.MULTILINE)
+draft_path.write_text("---\n" + yaml.safe_dump(frontmatter, allow_unicode=True, sort_keys=False).strip() + "\n---\n\n" + body.lstrip(), encoding="utf-8")
+
+meta = yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
+meta["title"] = selected_title
+meta["status"] = "titled"
+meta_path.write_text(yaml.safe_dump(meta, allow_unicode=True, sort_keys=False), encoding="utf-8")
+EOF
+```
+
 **更新 meta.yaml**：从 draft.md frontmatter 提取 title / summary：
 
 ```bash
@@ -223,7 +275,7 @@ if m:
     meta = yaml.safe_load(open(meta_path).read()) or {}
     meta['title'] = fm.get('title') or meta.get('title')
     meta['summary'] = fm.get('summary') or fm.get('description') or meta.get('summary')
-    meta['status'] = 'drafted'
+    meta['status'] = meta.get('status') or 'drafted'
     open(meta_path, 'w').write(yaml.dump(meta, allow_unicode=True, default_flow_style=False))
 EOF
 ```
@@ -281,11 +333,10 @@ find . -maxdepth 4 -name "*.md" -path "*/cover-image/*/prompts/*" \
 done
 ```
 
-封面提示词验收门槛：
+封面与正文配图提示词验收门槛：
 
 ```bash
-rg -n "^---|^type: cover|^palette:|^rendering:|^# Content Context|^# Visual Design|^# Text Elements|^# Mood Application|^# Font Application|^# Composition" \
-  "$ARTICLE_DIR/02-cover/prompts"
+python3 "{skill_dir}/scripts/validate-image-prompts.py" "$ARTICLE_DIR" --cover-only
 ```
 
 若缺少上述结构，视为生成失败；必须回到 baoyu-cover-image 模板重新生成/重建，不能用手写简化版补齐。
@@ -308,14 +359,13 @@ if [ -d "$SRC_IMGS" ]; then
 fi
 ```
 
-正文配图提示词验收门槛：
+若任一提示词缺少 YAML frontmatter 或缺少 type-specific 结构段落，视为生成失败；必须回到 baoyu-article-illustrator 模板重新生成/重建，不能用手写简化版补齐。
+
+完整提示词验收门槛：
 
 ```bash
-rg -n "^---|^illustration_id:|^type:|^style:|^palette:|^ZONES:|^LABELS:|^COLORS:|^STYLE:|^ASPECT:" \
-  "$ARTICLE_DIR/03-images/prompts"
+python3 "{skill_dir}/scripts/validate-image-prompts.py" "$ARTICLE_DIR"
 ```
-
-若任一提示词缺少 YAML frontmatter 或缺少 type-specific 结构段落，视为生成失败；必须回到 baoyu-article-illustrator 模板重新生成/重建，不能用手写简化版补齐。
 
 **更新 meta.yaml** `status: "prompts_ready"`
 
@@ -337,17 +387,25 @@ rg -n "^---|^illustration_id:|^type:|^style:|^palette:|^ZONES:|^LABELS:|^COLORS:
 
 **3.1 环境变量要求**：
 
+脚本会自动读取以下 `.env`，无需手动 `export`：
+
+- 当前工作目录 `.env`
+- `$XDG_CONFIG_HOME/baoyu-skills/.env` 或 `~/.config/baoyu-skills/.env`
+- `~/.baoyu-skills/.env`
+
+如需指定其它位置，再传 `--env-file`。
+
 ```bash
 # 必填二选一
-export IMAGE_API_KEY="..."
+IMAGE_API_KEY="..."
 # 或
-export MYWEB3_API_KEY="..."
+MYWEB3_API_KEY="..."
 
 # 可选
-export IMAGE_API_BASE="https://api.myweb3.cc/v1"
-export IMAGE_MODEL="gpt-image-2"
-export COVER_IMAGE_SIZE="1808x768"
-export ARTICLE_IMAGE_SIZE="1536x864"
+IMAGE_API_BASE="https://api.myweb3.cc/v1"
+IMAGE_MODEL="gpt-image-2"
+COVER_IMAGE_SIZE="1808x768"
+ARTICLE_IMAGE_SIZE="1536x864"
 ```
 
 本地服务 / 服务器环境如果已有 myweb3 代理，优先使用：
@@ -374,6 +432,7 @@ python3 "{skill_dir}/scripts/generate-images-myweb3.py" "$ARTICLE_DIR"
 
 ```bash
 python3 "{skill_dir}/scripts/generate-images-myweb3.py" "$ARTICLE_DIR" \
+  --env-file "$HOME/.baoyu-skills/.env" \
   --api-base "$IMAGE_API_BASE" \
   --model "${IMAGE_MODEL:-gpt-image-2}" \
   --cover-size "${COVER_IMAGE_SIZE:-1808x768}" \
@@ -398,6 +457,8 @@ IMAGE_COUNT=$(find "$ARTICLE_DIR/03-images" -maxdepth 1 \( -name "*.png" -o -nam
 | myweb3 重试后仍失败 | 停止，记录 `image_error`，保持 prompt 文件不变，之后可从 Step 3 恢复 |
 | 封面图缺失但正文图已生成 | 可继续 Step 4；发布时无 `--cover` 参数，微信会显示默认封面 |
 | 图片已存在 | 默认跳过不覆盖；需要重生成时用 `--force` |
+| 只重生成封面 | 使用 `--cover-only --force`，避免误覆盖正文配图 |
+| 只重生成正文配图 | 使用 `--body-only --force`，保留已修过的封面 |
 
 脚本成功后更新 meta.yaml：
 
@@ -439,7 +500,13 @@ BUN_X="bun"; command -v bun &>/dev/null || BUN_X="npx -y bun"
 ```
 
 调用 baoyu-format-markdown skill，输入为 `draft-with-images.md`（或 `draft.md`），
-传入 `auto_select: true`（自动选标题，不打断流程）。
+传入 `auto_select: true`（自动选标题，不打断流程）。默认加 `--no-spacing`，避免运行时临时拉取 `autocorrect-node`；只有确认依赖已安装或缓存时才开启 spacing。
+
+```bash
+$BUN_X "$FORMAT_SKILL/scripts/main.ts" \
+  "{原文件}" \
+  --no-spacing
+```
 
 格式化完成后，把输出文件复制到 pipeline 目录：
 
@@ -609,8 +676,10 @@ media_id：{media_id}
 | Step 0 | 目录已存在 | 询问是覆盖还是换新 slug |
 | Step 0 | markitdown 不可用 | 直接复制 VTT，继续（wewrite 能处理原始字幕格式）|
 | Step 1 | wewrite 输出文件找不到 | 提示用户手动指定 draft.md 路径 |
+| Step 1.6 | 找不到 title-formulas.md | 停止；不能跳过标题候选步骤，先安装 / 指定 baoyu-format-markdown |
 | Step 1 | python3 / yaml 不可用 | 跳过 meta.yaml 更新，手动从 frontmatter 读取 |
 | Step 2 | baoyu skill 定位失败 | 停止；不能跳过 Baoyu 模板生成，记录错误后等待安装 / 指定 skill 路径 |
+| 素材收集 | Reddit / 网页抓取被限制 | 记录抓取失败和替代来源；优先用用户提供正文、浏览器可见内容、截图或摘要继续，不把未验证 Reddit 评论写成事实 |
 | Step 3 | 图片 API Key 缺失 | 停止，提示配置 `IMAGE_API_KEY` 或 `MYWEB3_API_KEY`，记录 `status: image_failed` |
 | Step 3 | myweb3 超时 / 5xx / 524 | 自动重试；仍失败则记录 `image_error`，从 Step 3 恢复 |
 | Step 3 | 无封面图 | 继续，发布时微信显示默认封面 |

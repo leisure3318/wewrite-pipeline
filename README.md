@@ -1,18 +1,20 @@
 # wewrite-pipeline
 
-全流程公众号发布助手——从视频字幕到微信草稿箱，只有一个手动节点（图片生成）。
+全流程公众号发布助手——从视频字幕 / 本地文稿到微信草稿箱，串联写作、标题优化、图片提示词、自动生图、排版和发布。
 
 ## 它做什么
 
 ```
 [你的终端]              [Claude Code]
-yt-article URL slug → 字幕 → 写作 → 提示词生成 → ⏸ 等你放图片 → 格式化 → HTML → 草稿箱
+yt-article URL slug → 字幕 → 写作 → 标题候选 → 提示词生成 → myweb3 生图 → 格式化 → HTML → 草稿箱
 ```
 
 串联的技能链：
 - **wewrite** — 框架选择、素材增强、写作、SEO 验证
+- **baoyu-format-markdown/title-formulas** — 生成 5 个标题候选并默认选最强标题
 - **baoyu-cover-image** — 封面提示词（5 维度）
 - **baoyu-article-illustrator** — 配图提示词
+- **myweb3 兼容图片 API** — 自动生成封面和正文配图
 - **baoyu-format-markdown** — Markdown 排版和标题优化
 - **baoyu-markdown-to-html** — 渲染为微信兼容 HTML
 - **baoyu-post-to-wechat** — 上传图片并推送草稿箱
@@ -121,7 +123,38 @@ WECHAT_APP_SECRET=...
 
 wewrite-pipeline 直接复用这份配置，不需要额外设置。
 
-### 2. `yt-article` 函数（仅 YouTube 来源时需要）
+### 2. 图片 API 凭证（自动生图需要）
+
+配置以下任意一个 key 到 `.env`：
+
+```bash
+IMAGE_API_KEY=...
+# 或
+MYWEB3_API_KEY=...
+```
+
+pipeline 会自动读取：
+
+- 当前工作目录 `.env`
+- `$XDG_CONFIG_HOME/baoyu-skills/.env` 或 `~/.config/baoyu-skills/.env`
+- `~/.baoyu-skills/.env`
+
+可选配置：
+
+```bash
+IMAGE_API_BASE=https://api.myweb3.cc/v1
+IMAGE_MODEL=gpt-image-2
+COVER_IMAGE_SIZE=1808x768
+ARTICLE_IMAGE_SIZE=1536x864
+```
+
+如果只需要重生成封面：
+
+```bash
+python3 scripts/generate-images-myweb3.py ~/wewrite-articles/2026-05-01-my-topic --cover-only --force
+```
+
+### 3. `yt-article` 函数（仅 YouTube 来源时需要）
 
 在 `~/.zshrc` 末尾添加：
 
@@ -148,7 +181,7 @@ function yt-article() {
 source ~/.zshrc
 ```
 
-### 3. YouTube Cookie（仅 YouTube 来源时需要，有效期约 2-4 周）
+### 4. YouTube Cookie（仅 YouTube 来源时需要，有效期约 2-4 周）
 
 1. 安装 Chrome 插件「Get cookies.txt LOCALLY」
 2. 登录 YouTube，用插件导出 cookies
@@ -196,24 +229,30 @@ pipeline 读取 `meta.yaml` 中的 `status`，从上次停止的地方继续。
 ```
 Step 0  初始化目录           ~/wewrite-articles/YYYY-MM-DD-slug/ 建立完整结构
 Step 1  wewrite 写作         transcript → 原稿 draft.md（含 SEO 验证）
+Step 1.6 标题候选            读取 title-formulas.md，生成 5 个候选并写回最强标题
 Step 2  图片提示词           封面 → 02-cover/prompts/，配图 → 03-images/prompts/
-        ↓
-⏸ 暂停  等你手动生成图片     把图片放到对应目录，说「继续」
-        ↓
+Step 3  自动生成图片         myweb3 生成 cover.png 和正文配图
 Step 4  格式化 + 插图        插入图片引用，baoyu-format-markdown 优化排版
 Step 5  转 HTML             baoyu-markdown-to-html 渲染
 Step 6  发布草稿箱           npx tsx wechat-api.ts 推送，输出 media_id
 ```
 
-**关于图片暂停点**：
+**关于图片生成**：
 
-pipeline 生成提示词后，你需要：
-1. 打开 Gemini（gemini.google.com）或其他图片生成工具
-2. 把 `02-cover/prompts/` 和 `03-images/prompts/` 里的提示词粘贴进去
-3. 下载图片，分别放到 `02-cover/cover.jpeg` 和 `03-images/*.jpeg`
-4. 在 Claude Code 里说「继续」
+pipeline 生成 Baoyu prompt 后，会调用 `scripts/generate-images-myweb3.py` 自动生成图片。脚本默认跳过已存在图片，避免覆盖人工修过的图；需要重生成时显式加 `--force`。
 
-只有封面图是发布的必须项，配图可以先跳过（微信允许无配图文章）。
+常用恢复命令：
+
+```bash
+# 只重生成封面
+python3 scripts/generate-images-myweb3.py ~/wewrite-articles/2026-05-01-my-topic --cover-only --force
+
+# 只重生成正文配图
+python3 scripts/generate-images-myweb3.py ~/wewrite-articles/2026-05-01-my-topic --body-only --force
+
+# 校验 Baoyu prompt 结构
+python3 scripts/validate-image-prompts.py ~/wewrite-articles/2026-05-01-my-topic
+```
 
 ---
 
@@ -232,13 +271,13 @@ pipeline 生成提示词后，你需要：
     ├── 02-cover/
     │   ├── prompts/
     │   │   └── 01-cover-my-topic.md
-    │   └── cover.jpeg         ← 你手动生成后放这里
+    │   └── cover.png          ← myweb3 自动生成
     └── 03-images/
         ├── outline.md
         ├── prompts/
         │   ├── 01-infographic-concept.md
         │   └── 02-scene-example.md
-        └── 01-infographic-concept.jpeg   ← 你手动放这里
+        └── 01-infographic-concept.png    ← myweb3 自动生成
 ```
 
 `meta.yaml` 示例：
@@ -259,7 +298,7 @@ published_at: "2026-05-01T14:30:00+08:00"
 
 | 限制 | 原因 | 计划 |
 |------|------|------|
-| 图片需手动生成 | 暂无图片生成 API | 接通 Gemini API 后可全自动 |
+| 图片 API 可能返回 413 | prompt 或请求体过大 | 精简 prompt / 降低图片数量 / 使用本地兼容代理 |
 | YouTube 字幕需在用户终端下载 | Claude Code 沙箱 IP 被 YouTube 封锁 | 有官方 YouTube Data API key 后可解决 |
 | bun 不能发布 | 系统防火墙拦截 bun 进程外网 | 已改用 npx tsx；或给 bun 开放防火墙 |
 
@@ -282,6 +321,24 @@ find ~/.claude/plugins/cache/baoyu-skills -name "wechat-api.ts"
 
 **图片相对路径在 HTML 中失效**
 确保配图文件名和 `outline.md` 里的 Filename 字段一致。
+
+**图片 prompt 校验失败**
+运行：
+
+```bash
+python3 scripts/validate-image-prompts.py ~/wewrite-articles/{slug}
+```
+
+如果缺少 `ZONES` / `LABELS` / `COLORS` / `STYLE` / `ASPECT`，回到 baoyu-article-illustrator 模板重建 prompt，不要用简化自然语言 prompt 顶上。
+
+**标题没有被自动优化**
+确认本地能找到：
+
+```bash
+find ~/.codex/plugins/cache ~/.agents/plugins/cache ~/.claude/plugins/cache ~/.baoyu-skills -path "*/baoyu-format-markdown/references/title-formulas.md"
+```
+
+找不到时先安装或更新 baoyu-format-markdown。
 
 ---
 
