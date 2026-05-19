@@ -1,13 +1,18 @@
 ---
 name: wewrite-pipeline
 description: |
-  公众号内容全流程 pipeline：视频字幕 / 本地文稿 → 微信草稿箱。
+  公众号内容全流程 pipeline：视频字幕 / 本地文稿 / 网页 URL → 微信草稿箱。
   自动初始化每篇文章的隔离目录结构，串联 wewrite（写作）+
   baoyu-cover-image（封面提示词）+ baoyu-article-illustrator（配图提示词）+
   baoyu-format-markdown（格式化）+ baoyu-markdown-to-html（排版）+
   baoyu-post-to-wechat（发布），并通过 myweb3 自动生成封面和正文配图。
-  触发词：wewrite-pipeline、全流程、pipeline、一键发布、字幕转公众号
+  触发词：wewrite-pipeline、全流程、pipeline、一键发布、字幕转公众号、网页转公众号、博客转公众号
 user_invocable: true
+allowed-tools:
+  - Bash
+  - Read
+  - Write
+  - Edit
 ---
 
 # WeWrite Pipeline — 公众号全流程编排
@@ -49,7 +54,7 @@ user_invocable: true
 - **图片提示词硬约束**：Step 2 必须使用 baoyu-cover-image / baoyu-article-illustrator 的原始 skill 模板生成或重建提示词；禁止用临时手写、口述简化版、自由发挥版替代 baoyu 模板。
 - **图片 API 配置**：Step 3 读取 `IMAGE_API_KEY` 或 `MYWEB3_API_KEY`；可选 `IMAGE_API_BASE`（默认 `https://api.myweb3.cc/v1`）、`IMAGE_MODEL`（默认 `gpt-image-2`）、`COVER_IMAGE_SIZE`（默认 `1808x768`）、`ARTICLE_IMAGE_SIZE`（默认 `1536x864`）。尺寸会向上取整为 16 的倍数。
 - **网络限制规避**：发布步骤强制使用 `npx --yes tsx` 调用 `wechat-api.ts`，禁止使用 `bun`（bun 出口网络在本环境被系统拦截）。
-- **内容来源隐身硬约束**：YouTube / 字幕 / 访谈 / 文稿只能作为素材来源。除非用户明确要求写观后感、解读、逐字稿或来源评述，公开正文必须写成独立公众号文章，禁止用“看完这个视频 / 视频作者说 / 视频里 / 字幕里 / 作者说”等来源框架。
+- **内容来源隐身硬约束**：YouTube / 字幕 / 访谈 / 文稿 / 网页博客原文只能作为素材来源。除非用户明确要求写观后感、解读、逐字稿、来源评述或翻译，公开正文必须写成独立公众号文章，禁止用“看完这个视频 / 视频作者说 / 视频里 / 字幕里 / 作者说 / 原文写道 / 原作者认为 / 这篇博客提到”等来源框架。
 - **标题候选硬约束**：Step 1 写完正文后必须增加“标题候选生成 / 标题党优化”小步骤，读取 `baoyu-format-markdown/references/title-formulas.md`，产出 5 个标题候选，并默认选择最强标题写回 frontmatter、H1 和 `meta.yaml`。
 - **路径约定**：本文档中 `{ARTICLE_DIR}` 指当次运行的文章根目录，`{skill_dir}` 指本 SKILL.md 所在目录。
 - **进度追踪**：在 Codex 中优先用 `update_plan` 创建/更新步骤；不可用时用简短进度列表，完成一步标记一步。
@@ -104,10 +109,11 @@ Plan item: "Step 6: 发布草稿箱"
 |------|---------|------|
 | 本地 `.md` 文件 | `test -f <path>` 且以 `.md` 结尾 | 复制到 `00-source/transcript.md` |
 | 本地 `.vtt` 文件 | `test -f <path>` 且以 `.vtt` 结尾 | 尝试 markitdown 转换，失败则直接复制 |
-| YouTube URL | 匹配 `https?://(www\.)?youtu(be\.com|\.be)/` | 输出 yt-article 命令，等待用户 |
+| YouTube URL | 匹配 `https?://(www\.)?youtu(be\.com\|\.be)/` | 输出 yt-article 命令，等待用户 |
+| 其他 Web URL | 匹配 `https?://` 但**不匹配** YouTube | **不暂停**，按 0.2b 自动抓取保存为 `00-source/transcript.md` |
 | 已有文章目录 | `test -d <path>/00-source` | 进入恢复模式（见文末）|
 
-**0.2 YouTube 暂停提示**（仅 URL 输入时）：
+**0.2 YouTube 暂停提示**（仅 YouTube URL 输入时）：
 
 ```
 检测到 YouTube URL，字幕需在你的终端下载（沙箱网络限制）。
@@ -121,6 +127,31 @@ Plan item: "Step 6: 发布草稿箱"
 
 没有 yt-article 命令？在 ~/.zshrc 加入（见 README.md 的安装说明）。
 ```
+
+**0.2b 普通 Web URL 抓取**（仅非 YouTube web URL 输入时，**不暂停**，全自动）：
+
+不同于 YouTube，普通 web URL（博客文章、新闻、文档等）由 pipeline 直接抓取，不需要用户在终端操作。
+
+**主路径**：baoyu-url-to-markdown 的 `baoyu-fetch` CLI（Chrome CDP + 站点适配器，输出最干净的 markdown）：
+
+```bash
+URL2MD_SKILL=$(find ~/.codex/plugins/cache ~/.agents/plugins/cache ~/.claude/plugins/cache ~/.baoyu-skills -name "SKILL.md" -path "*/baoyu-url-to-markdown/*" 2>/dev/null | head -1 | xargs dirname)
+BAOYU_FETCH="$URL2MD_SKILL/scripts/baoyu-fetch"
+
+# 首次使用需安装依赖
+[ -d "$URL2MD_SKILL/scripts/node_modules" ] || bun install --cwd "$URL2MD_SKILL/scripts"
+
+# 抓取，30 秒超时
+"$BAOYU_FETCH" "$URL" --output "$ARTICLE_DIR/00-source/transcript.md" --timeout 30000 2>&1 | tee /tmp/baoyu-fetch.log
+```
+
+**降级路径**：baoyu-fetch 的 Chrome CDP 在部分环境（沙箱、Linux server）启动失败时，**直接、静默**降级到 agent 的 `WebFetch` 工具，不需要询问用户：
+
+- 调 `WebFetch`，传入 URL 与 prompt：「请把这篇文章完整内容输出为干净的 markdown，要求保留标题/作者/日期/正文/列表/引用，不要总结、不要省略、不要解读」
+- 把返回的 markdown 写入 `$ARTICLE_DIR/00-source/transcript.md`
+- 在 `meta.yaml` 记录 `fetch_method: webfetch`，主路径成功时记 `fetch_method: baoyu-fetch`
+
+**slug 自动推断**（用户没传 slug 时）：取 URL path 最后一段（去掉 `.html` / `.htm` 等后缀），转 kebab-case；如果 path 是 `/` 或太短（< 3 字符），改用页面 H1 标题前 2-4 个英文/数字词。
 
 **0.3 创建目录结构**：
 
@@ -581,11 +612,11 @@ for ENV_PATH in \
   [ -f "$ENV_PATH" ] && { source "$ENV_PATH"; break; }
 done
 
-[ -z "$WECHAT_APP_ID" ] || [ -z "$WECHAT_APP_SECRET" ] && {
+if [ -z "$WECHAT_APP_ID" ] || [ -z "$WECHAT_APP_SECRET" ]; then
   echo "错误：微信 API 凭证未配置。"
   echo "请先运行 baoyu-post-to-wechat skill 完成首次配置，再使用 pipeline 发布。"
   exit 1
-}
+fi
 ```
 
 **6.3 读取发布参数**：
@@ -675,6 +706,8 @@ media_id：{media_id}
 |------|------|------|
 | Step 0 | 目录已存在 | 询问是覆盖还是换新 slug |
 | Step 0 | markitdown 不可用 | 直接复制 VTT，继续（wewrite 能处理原始字幕格式）|
+| Step 0.2b | baoyu-fetch Chrome CDP 启动失败 / 超时 | 静默降级到 `WebFetch`，无需用户介入；记录 `fetch_method: webfetch` |
+| Step 0.2b | WebFetch 也失败（网络/认证 URL） | 提示用户该 URL 需要登录或代理；让用户手动粘贴正文或换 URL |
 | Step 1 | wewrite 输出文件找不到 | 提示用户手动指定 draft.md 路径 |
 | Step 1.6 | 找不到 title-formulas.md | 停止；不能跳过标题候选步骤，先安装 / 指定 baoyu-format-markdown |
 | Step 1 | python3 / yaml 不可用 | 跳过 meta.yaml 更新，手动从 frontmatter 读取 |
