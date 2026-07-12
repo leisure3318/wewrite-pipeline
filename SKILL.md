@@ -5,7 +5,7 @@ description: |
   自动初始化每篇文章的隔离目录结构，串联 wewrite（写作）+
   baoyu-cover-image（封面提示词）+ baoyu-article-illustrator（配图提示词）+
   baoyu-format-markdown（格式化）+ baoyu-markdown-to-html（排版）+
-  baoyu-post-to-wechat（发布），并通过 myweb3 自动生成封面和正文配图。
+  baoyu-post-to-wechat（发布），并通过可配置的图片 API 自动生成封面和正文配图。
   触发词：wewrite-pipeline、全流程、pipeline、一键发布、字幕转公众号、网页转公众号、博客转公众号
 user_invocable: true
 allowed-tools:
@@ -19,7 +19,7 @@ allowed-tools:
 
 ## 概述
 
-将「有原始素材」到「草稿箱」之间所有重复步骤自动化。图片提示词仍由 Baoyu 原始模板生成，随后通过 myweb3 兼容的图片 API 自动生成封面和正文配图。
+将「有原始素材」到「草稿箱」之间所有重复步骤自动化。图片提示词仍由 Baoyu 原始模板生成，随后通过用户配置的 OpenAI 兼容图片 API 自动生成封面和正文配图。
 
 ### 文章目录结构（每篇独立隔离）
 
@@ -35,13 +35,13 @@ allowed-tools:
     ├── 02-cover/
     │   ├── prompts/
     │   │   └── 01-cover-{slug}.md   # 封面提示词
-    │   └── cover.png            # myweb3 自动生成
+    │   └── cover.png            # 已配置图片 API 自动生成
     ├── 03-images/
     │   ├── outline.md           # 配图规划
     │   ├── prompts/
     │   │   ├── 01-{type}-{slug}.md
     │   │   └── ...              # 各张配图提示词
-    │   └── *.png                # myweb3 自动生成
+    │   └── *.png                # 已配置图片 API 自动生成
     └── meta.yaml                # 文章元数据和流程状态
 ```
 
@@ -50,14 +50,21 @@ allowed-tools:
 ## 行为声明
 
 - **默认全自动**：Step 0 → Step 6 连续运行；YouTube 字幕下载和缺少必要 API 凭证除外。
-- **自动图片生成**：Step 3 读取 Step 2 产出的 Baoyu prompt 文件，通过 myweb3 `/images/generations` 自动生成图片。
+- **自动图片生成**：Step 3 读取 Step 2 产出的 Baoyu prompt 文件，通过用户配置的 OpenAI 兼容 `/images/generations` 图片 API 自动生成图片。
+- **图片外发授权**：默认要求每篇文章在 Step 3 前获得本篇明确授权；如果本机配置 `~/.baoyu-skills/wewrite-pipeline/EXTEND.md` 中设置 `image_prompt_auto_consent: true`（或兼容旧的 `myweb3_prompt_auto_consent: true`），则视为用户对普通公众号文章图片 prompt 的长期授权，可自动进入 Step 3。自动授权不适用于明确要求保密、包含密钥/凭证/客户资料/私密聊天/未公开商业资料的素材；这些情况仍必须暂停并请求单篇授权。
 - **图片提示词硬约束**：Step 2 必须使用 baoyu-cover-image / baoyu-article-illustrator 的原始 skill 模板生成或重建提示词；禁止用临时手写、口述简化版、自由发挥版替代 baoyu 模板。
-- **图片 API 配置**：Step 3 读取 `IMAGE_API_KEY` 或 `MYWEB3_API_KEY`；可选 `IMAGE_API_BASE`（默认 `https://api.myweb3.cc/v1`）、`IMAGE_MODEL`（默认 `gpt-image-2`）、`COVER_IMAGE_SIZE`（默认 `1808x768`）、`ARTICLE_IMAGE_SIZE`（默认 `1536x864`）。尺寸会向上取整为 16 的倍数。
+- **图片 API 配置**：Step 3 读取 `IMAGE_API_BASE`、`IMAGE_API_KEY` 和 `IMAGE_MODEL`；可选 `IMAGE_API_BACKEND`（写入元数据的服务商标识）、`COVER_IMAGE_SIZE`、`ARTICLE_IMAGE_SIZE`。接口需要兼容 OpenAI `/images/generations`。尺寸会向上取整为 16 的倍数。为了不影响旧环境，未设置 `IMAGE_API_BASE` 时仍回退到历史默认值，`MYWEB3_API_KEY` 仍作为旧配置别名支持。
 - **网络限制规避**：发布步骤强制使用 `npx --yes tsx` 调用 `wechat-api.ts`，禁止使用 `bun`（bun 出口网络在本环境被系统拦截）。
 - **内容来源隐身硬约束**：YouTube / 字幕 / 访谈 / 文稿 / 网页博客原文只能作为素材来源。除非用户明确要求写观后感、解读、逐字稿、来源评述或翻译，公开正文必须写成独立公众号文章，禁止用“看完这个视频 / 视频作者说 / 视频里 / 字幕里 / 作者说 / 原文写道 / 原作者认为 / 这篇博客提到”等来源框架。
+- **观点型写作硬约束**：Step 1 不得把素材改写成中性摘要或信息搬运。正文必须形成清晰作者立场，至少包含中心判断、理由链条、风险边界或反对意见回应；可以吸收素材事实，但必须输出独立观点。
+- **WeWrite 写作规则同步**：Step 1 调用 `wewrite` 前必须加载本机最新 `wewrite` skill 的 `writing-guide.md`、`playbook.md`、`history.yaml`、`style.yaml`、persona、范文/种子段落，以及 upstream 新增的 `persona-selection.md`、`realtime-check.md`、`commands.md`（存在时）；这些规则是语言质量和风格底线，pipeline 的独立文章/观点/总结约束是额外覆盖。
+- **WeWrite 验证同步**：Step 1.5 除独立文章来源、观点和总结外，还必须执行 WeWrite 的禁用词、句长方差、段落节奏、具体性、情绪极性、分段实时自检和 `humanness_score.py` 辅助验证；只修具体问题段落，不整篇重写。
+- **末尾总结硬约束**：除非用户明确要求不要总结，Step 1 生成的 `draft.md` 末尾必须包含 `## 总结` 或等价总结段，提炼 3-5 条可复述结论，不能只用一句口号收尾。
 - **标题候选硬约束**：Step 1 写完正文后必须增加“标题候选生成 / 标题党优化”小步骤，读取 `baoyu-format-markdown/references/title-formulas.md`，产出 5 个标题候选，并默认选择最强标题写回 frontmatter、H1 和 `meta.yaml`。
 - **路径约定**：本文档中 `{ARTICLE_DIR}` 指当次运行的文章根目录，`{skill_dir}` 指本 SKILL.md 所在目录。
-- **进度追踪**：在 Codex 中优先用 `update_plan` 创建/更新步骤；不可用时用简短进度列表，完成一步标记一步。
+- **读取/检查约定**：本文档中 `读取: <路径>` / `检查: <路径>` = 用当前 harness 的文件读取工具真实打开该文件、读完其全部内容，然后再继续依赖该文件的步骤；不同环境工具名不同，按本环境对应工具执行。
+- **Python 解释器约定**：调用 WeWrite 自带脚本时，所有 `python3` 命令优先解析为 `$WEWRITE_SKILL/.venv/bin/python3`（若存在），否则回退系统 `python3`；pipeline 自带脚本仍可用系统 `python3`，除非本机另有 venv 配置。
+- **进度追踪**：在 Codex 中优先用 `update_plan` 创建/更新步骤；不可用时用简短文本进度列表，完成一步标记一步。编号清单只是排序骨架，不依赖特定任务工具。
 
 ---
 
@@ -70,13 +77,14 @@ $wewrite-pipeline <素材> [slug]
 
 | 参数 | 说明 |
 |------|------|
-| `<素材>` | 本地 `.md` / `.vtt` 文件路径，或 YouTube URL |
+| `<素材>` | 本地 `.md` / `.vtt` 文件路径、YouTube URL，或普通 Web URL |
 | `[slug]` | 可选，英文 kebab-case（2-4 词）。不传则从内容自动推断 |
 
 **示例**：
 ```bash
 $wewrite-pipeline ~/Downloads/video-transcript.md claude-regression-2026
 $wewrite-pipeline "https://youtube.com/watch?v=xxx" ai-new-features
+$wewrite-pipeline "https://example.com/blog/post" web-article-topic
 $wewrite-pipeline ~/wewrite-articles/2026-05-01-my-topic   # 恢复模式
 ```
 
@@ -91,7 +99,7 @@ Plan item: "Step 0: 初始化目录"
 Plan item: "Step 1: wewrite 写作"
 Plan item: "Step 1.6: 标题候选生成 / 标题党优化"
 Plan item: "Step 2: 生成图片提示词"
-Plan item: "Step 3: 自动生成图片（myweb3）"
+Plan item: "Step 3: 自动生成图片（已配置图片 API）"
 Plan item: "Step 4: 格式化 + 插图"
 Plan item: "Step 5: 转换 HTML"
 Plan item: "Step 6: 发布草稿箱"
@@ -210,12 +218,53 @@ errors: []
 
 读取 `{ARTICLE_DIR}/00-source/transcript.md` 的内容，调用 **wewrite skill** 进行写作。
 
+**Step 1.0: 加载最新 WeWrite 写作上下文**：
+
+在调用 wewrite 前，先定位当前安装的 wewrite skill，并把最新写作规则作为本次写作 prompt 的硬上下文；不要复制旧版规则到 pipeline 里长期漂移。
+
+```bash
+WEWRITE_SKILL=$(find ~/.agents/skills ~/.codex/skills ~/.claude/skills -maxdepth 2 \
+  -name "SKILL.md" -path "*/wewrite/SKILL.md" 2>/dev/null | head -1 | sed 's#/SKILL.md$##')
+
+[ -z "$WEWRITE_SKILL" ] && {
+  echo "错误：找不到 wewrite skill，不能继续生成文章。"
+  exit 1
+}
+
+WEWRITE_PY="$WEWRITE_SKILL/.venv/bin/python3"
+[ -x "$WEWRITE_PY" ] || WEWRITE_PY="python3"
+
+sed -n '1,140p' "$WEWRITE_SKILL/SKILL.md"
+sed -n '217,370p' "$WEWRITE_SKILL/SKILL.md"
+sed -n '1,340p' "$WEWRITE_SKILL/references/writing-guide.md"
+[ -f "$WEWRITE_SKILL/references/persona-selection.md" ] && sed -n '1,220p' "$WEWRITE_SKILL/references/persona-selection.md"
+[ -f "$WEWRITE_SKILL/references/realtime-check.md" ] && sed -n '1,220p' "$WEWRITE_SKILL/references/realtime-check.md"
+[ -f "$WEWRITE_SKILL/references/commands.md" ] && sed -n '1,180p' "$WEWRITE_SKILL/references/commands.md"
+[ -f "$WEWRITE_SKILL/playbook.md" ] && sed -n '1,220p' "$WEWRITE_SKILL/playbook.md"
+[ -f "$WEWRITE_SKILL/history.yaml" ] && tail -80 "$WEWRITE_SKILL/history.yaml"
+```
+
+必须同步执行 WeWrite 最新 Step 4/5 写作约束：
+
+- 读取 `style.yaml` 的 `writing_persona`；如果没有固定 persona，则读取 `references/persona-selection.md`（存在时），按素材主题自动匹配 top 2，并结合 `history.yaml` 最近 3 篇 persona 降权，避免连续重复；匹配不明确时默认 `midnight-friend`。
+- 读取最终选定的 `personas/{persona}.yaml`；persona 是写作硬约束，不能只读文件名。
+- 若 `references/exemplars/index.yaml` 存在，按当前文章类型注入范文片段；没有范文库时读取 `references/exemplar-seeds.yaml`，从开头、情绪段、转折、收尾各抽 1 个结构模式。
+- 从叙事视角、时间线、类比域、情绪基调、节奏中随机激活 2-3 个表达维度；参考 `history.yaml`，避免连续使用同一组合和同一收尾类型。
+- 读取 `references/realtime-check.md`（存在时），每写完约 500 字或一个 H2 后执行分段自检；问题当场修，不等到全文写完。
+- 优先级固定为：`playbook.md`（confidence >= 5）> persona > 范文风格 > `writing-guide.md` > pipeline 的主题约束。
+- pipeline 的“独立文章来源”“必须发表观点”“末尾总结”和“标题候选”约束是额外硬约束，不能被 persona、范文或 WeWrite 默认流程覆盖。
+- WeWrite upstream 新增容器 `:::highlight`、`:::summary` 可作为可选排版元素；不得为了炫技强塞容器。
+
 **调用 wewrite 时的指令**：
 
 > 这是一篇视频字幕 / 文稿内容，已有明确选题和素材。
 > 请跳过选题和热点抓取（Step 2），直接从框架选择（Step 3）开始，
 > 把这份素材当作内容基础，完成写作和质量验证流程。
+> 请严格执行当前最新 WeWrite Step 4/5：真实读取 writing-guide、playbook、history、persona、范文/种子段落、persona-selection、realtime-check；执行人格选择、history 去重、分段实时自检、快速自检、质量验证和 humanness_score 辅助检查。
 > **公开正文必须是独立公众号文章**：素材来源可以保留在 frontmatter / meta.yaml，正文不得写成“看完视频后的感想”、不得出现“视频作者说 / 视频里 / 字幕里 / 这个视频”等来源框架；除非用户明确要求观后感或来源评述。
+> **必须发表观点**：不要只复述素材，也不要写成中性摘要。请提炼一个可争辩、可展开的中心判断，并在正文中给出理由链条、具体场景、反对意见或风险边界；让读者读完知道作者到底赞成什么、反对什么、提醒什么。
+> **末尾必须总结**：正文最后增加 `## 总结`，用 3-5 条短结论收束全文，提炼可复述观点和行动启发。
+> **快速自检后再保存**：保存前扫描禁用词、句长方差、段落节奏、开头钩子、具体细节、金句密度、情绪极性和平台硬限；只修具体不达标的句子/段落。
 > **输出文件保存到 `{ARTICLE_DIR}/01-article/draft.md`**，
 > 而不是 wewrite 的默认 output 目录。
 
@@ -240,6 +289,47 @@ python3 "{skill_dir}/scripts/validate-standalone-article.py" "$ARTICLE_DIR/01-ar
 ```
 
 如果校验失败，必须先重写 `draft.md`，让文章以独立观点 / 方法 / 清单呈现；不要继续 Step 2，也不要发布。允许在 frontmatter / meta.yaml 保留 source URL 作为内部追踪信息。
+
+**Step 1.5b: 观点与总结校验**：
+
+进入标题、图片提示词、格式化、HTML 和发布前，必须人工快速检查 `draft.md`：
+
+- 是否有一句清晰中心判断，而不是“素材讲了什么”的摘要。
+- 是否至少包含一个作者判断、一个风险边界或反对意见回应。
+- 是否在末尾包含 `## 总结` 或等价总结段，并提炼 3-5 条结论。
+- 是否没有把 `:::summary` 容器当成唯一总结；容器可以增强排版，但正文仍要有可读的总结段。
+
+若缺少观点或总结，必须先重写 `draft.md`；不要继续 Step 1.6、Step 2 或发布。
+
+**Step 1.5c: WeWrite 质量验证同步**：
+
+进入标题、图片提示词、格式化、HTML 和发布前，必须按最新 WeWrite Step 5 做一次写作质量检查：
+
+- 禁用词：扫描 `writing-guide.md` 2.1，命中数必须为 0。
+- 句长方差：不能连续 3 句以上长度接近；每 500 字至少有明显长短落差。
+- 段落节奏：不能连续 2 个相近长度段落；普通段落过长时先拆段。
+- 情绪极性：至少 2 处真实质疑、担忧、吐槽或边界判断，不能全篇中性转述。
+- 具体性：每 500 字至少 2 处具体细节；每个 H2 至少有 1 条来自原始素材的真实锚点。
+- 内容质量：开头前 3 句必须有悬念/冲突/好奇心；全文至少有 1 句可独立截图传播的金句；观点不能是“两面都有道理”。
+- 平台硬限：正文不超过 20000 字、图片不超过 10 张、表格不超过 4 列；未认证公众号不能保留外部链接。
+
+同步运行脚本辅助验证；脚本缺失时不阻塞，但必须人工完成上面的逐项检查：
+
+```bash
+WEWRITE_SKILL=${WEWRITE_SKILL:-$(find ~/.agents/skills ~/.codex/skills ~/.claude/skills -maxdepth 2 \
+  -name "SKILL.md" -path "*/wewrite/SKILL.md" 2>/dev/null | head -1 | sed 's#/SKILL.md$##')}
+
+if [ -n "$WEWRITE_SKILL" ]; then
+  WEWRITE_PY="${WEWRITE_PY:-$WEWRITE_SKILL/.venv/bin/python3}"
+  [ -x "$WEWRITE_PY" ] || WEWRITE_PY="python3"
+fi
+
+if [ -n "$WEWRITE_SKILL" ] && [ -f "$WEWRITE_SKILL/scripts/humanness_score.py" ]; then
+  "$WEWRITE_PY" "$WEWRITE_SKILL/scripts/humanness_score.py" "$ARTICLE_DIR/01-article/draft.md" --json
+fi
+```
+
+若 `composite_score` >= 30，读取 `param_scores` 中最差的 1-3 项，逐项定向修复相关句子或段落；每轮最多改 3 处，最多 2 轮。不要为降分项整篇重写，也不要动已经通过的段落。
 
 **Step 1.6: 标题候选生成 / 标题党优化**：
 
@@ -319,7 +409,7 @@ EOF
 
 **进度：Step 2 -> in_progress**
 
-> 本步骤只生成提示词文件，不调用任何图片生成 API。图片生成统一交给 Step 3 的 myweb3 自动化脚本。
+> 本步骤只生成提示词文件，不调用任何图片生成 API。图片生成统一交给 Step 3 的图片 API 自动化脚本。
 
 **强制模板规则（不可跳过）**：
 
@@ -404,11 +494,26 @@ python3 "{skill_dir}/scripts/validate-image-prompts.py" "$ARTICLE_DIR"
 
 ---
 
-### Step 3: 自动生成图片（myweb3）
+### Step 3: 自动生成图片（可配置图片 API）
 
 **进度：Step 3 -> in_progress**
 
-读取 Step 2 生成的 Baoyu prompt 文件，调用 myweb3 兼容图片 API 自动生成图片：
+**3.0 授权检查**：
+
+Step 3 会把 `{ARTICLE_DIR}/02-cover/prompts/*.md` 和 `{ARTICLE_DIR}/03-images/prompts/*.md` 的内容发送到用户配置的第三方图片 API。执行前必须满足其一：
+
+- 当前对话中，用户已对本篇文章明确同意发送图片 prompt 到已配置的第三方图片 API。
+- 本机配置 `~/.baoyu-skills/wewrite-pipeline/EXTEND.md` 存在并设置：
+
+```yaml
+image_prompt_auto_consent: true
+```
+
+旧的 `myweb3_prompt_auto_consent: true` 同样视为授权，保证已有本地配置不受影响。
+
+长期授权只覆盖普通公众号文章的封面和正文配图 prompt。若素材或 prompt 明显包含密钥、token、密码、客户资料、私密聊天、未公开商业资料，或用户在当前任务中表达“不要外发 / 不要发第三方 / 仅本地处理”，必须忽略长期授权并暂停请求单篇授权。
+
+读取 Step 2 生成的 Baoyu prompt 文件，调用已配置的 OpenAI 兼容图片 API 自动生成图片：
 
 - 封面：读取 `{ARTICLE_DIR}/02-cover/prompts/*.md` 的第一份 prompt，生成 `{ARTICLE_DIR}/02-cover/cover.png`
 - 正文配图：读取 `{ARTICLE_DIR}/03-images/prompts/*.md`，按文件名排序，生成 `{ARTICLE_DIR}/03-images/{prompt_stem}.png`
@@ -427,19 +532,18 @@ python3 "{skill_dir}/scripts/validate-image-prompts.py" "$ARTICLE_DIR"
 如需指定其它位置，再传 `--env-file`。
 
 ```bash
-# 必填二选一
+# 必填：按你的图片服务商填写
+IMAGE_API_BASE="https://your-image-api.example/v1"
 IMAGE_API_KEY="..."
-# 或
-MYWEB3_API_KEY="..."
+IMAGE_MODEL="your-image-model"
 
 # 可选
-IMAGE_API_BASE="https://api.myweb3.cc/v1"
-IMAGE_MODEL="gpt-image-2"
+IMAGE_API_BACKEND="my-provider"
 COVER_IMAGE_SIZE="1808x768"
 ARTICLE_IMAGE_SIZE="1536x864"
 ```
 
-本地服务 / 服务器环境如果已有 myweb3 代理，优先使用：
+本地服务 / 服务器环境可直接配置自己的 OpenAI 兼容代理：
 
 ```bash
 export IMAGE_API_BASE="http://host.docker.internal:8317/v1"
@@ -456,16 +560,16 @@ IMAGE_PROMPT_COUNT=$(find "$ARTICLE_DIR/03-images/prompts" -name "*.md" | wc -l 
   exit 1
 }
 
-python3 "{skill_dir}/scripts/generate-images-myweb3.py" "$ARTICLE_DIR"
+python3 "{skill_dir}/scripts/generate-images.py" "$ARTICLE_DIR"
 ```
 
 脚本可选参数：
 
 ```bash
-python3 "{skill_dir}/scripts/generate-images-myweb3.py" "$ARTICLE_DIR" \
+python3 "{skill_dir}/scripts/generate-images.py" "$ARTICLE_DIR" \
   --env-file "$HOME/.baoyu-skills/.env" \
   --api-base "$IMAGE_API_BASE" \
-  --model "${IMAGE_MODEL:-gpt-image-2}" \
+  --model "$IMAGE_MODEL" \
   --cover-size "${COVER_IMAGE_SIZE:-1808x768}" \
   --image-size "${ARTICLE_IMAGE_SIZE:-1536x864}" \
   --retries 2
@@ -484,8 +588,8 @@ IMAGE_COUNT=$(find "$ARTICLE_DIR/03-images" -maxdepth 1 \( -name "*.png" -o -nam
 
 | 情况 | 处理 |
 |------|------|
-| API Key 缺失 | 停止，提示配置 `IMAGE_API_KEY` 或 `MYWEB3_API_KEY`，在 meta.yaml 记录 `status: image_failed` |
-| myweb3 重试后仍失败 | 停止，记录 `image_error`，保持 prompt 文件不变，之后可从 Step 3 恢复 |
+| API 配置缺失 | 停止，提示配置 `IMAGE_API_BASE`、`IMAGE_API_KEY`、`IMAGE_MODEL`，在 meta.yaml 记录 `status: image_failed` |
+| 图片 API 重试后仍失败 | 停止，记录 `image_error`，保持 prompt 文件不变，之后可从 Step 3 恢复 |
 | 封面图缺失但正文图已生成 | 可继续 Step 4；发布时无 `--cover` 参数，微信会显示默认封面 |
 | 图片已存在 | 默认跳过不覆盖；需要重生成时用 `--force` |
 | 只重生成封面 | 使用 `--cover-only --force`，避免误覆盖正文配图 |
@@ -497,7 +601,7 @@ IMAGE_COUNT=$(find "$ARTICLE_DIR/03-images" -maxdepth 1 \( -name "*.png" -o -nam
 status: "images_ready"
 cover_images: true
 body_images: {IMAGE_COUNT}
-image_backend: "myweb3"
+image_backend: "{IMAGE_API_BACKEND}"
 image_model: "{IMAGE_MODEL}"
 ```
 
@@ -692,7 +796,7 @@ media_id：{media_id}
 | `init` | Step 1 | transcript 已就位，还未写作 |
 | `drafted` | Step 1.5 | 原稿已有，先做独立文章来源框架校验，再生成提示词 |
 | `prompts_ready` | Step 3 | 提示词已有，需要自动生成图片 |
-| `image_failed` | Step 3 | 上次 myweb3 生成失败，修复配置或稍后重试 |
+| `image_failed` | Step 3 | 上次图片 API 生成失败，修复配置或稍后重试 |
 | `images_ready` | Step 4 | 图片已生成，需要格式化 |
 | `formatted` | Step 5 | 已格式化，需要转 HTML |
 | `html_ready` | Step 6 | HTML 已有，需要发布 |
@@ -713,8 +817,8 @@ media_id：{media_id}
 | Step 1 | python3 / yaml 不可用 | 跳过 meta.yaml 更新，手动从 frontmatter 读取 |
 | Step 2 | baoyu skill 定位失败 | 停止；不能跳过 Baoyu 模板生成，记录错误后等待安装 / 指定 skill 路径 |
 | 素材收集 | Reddit / 网页抓取被限制 | 记录抓取失败和替代来源；优先用用户提供正文、浏览器可见内容、截图或摘要继续，不把未验证 Reddit 评论写成事实 |
-| Step 3 | 图片 API Key 缺失 | 停止，提示配置 `IMAGE_API_KEY` 或 `MYWEB3_API_KEY`，记录 `status: image_failed` |
-| Step 3 | myweb3 超时 / 5xx / 524 | 自动重试；仍失败则记录 `image_error`，从 Step 3 恢复 |
+| Step 3 | 图片 API 配置缺失 | 停止，提示配置 `IMAGE_API_BASE`、`IMAGE_API_KEY`、`IMAGE_MODEL`，记录 `status: image_failed` |
+| Step 3 | 图片 API 超时 / 5xx / 524 | 自动重试；仍失败则记录 `image_error`，从 Step 3 恢复 |
 | Step 3 | 无封面图 | 继续，发布时微信显示默认封面 |
 | Step 6 | 凭证缺失 | 引导用户先运行 baoyu-post-to-wechat skill 配置 |
 | Step 6 | npx 不可用 | 提示安装 Node.js：`brew install node` |
@@ -726,5 +830,5 @@ media_id：{media_id}
 
 - **bun 网络**：baoyu-format-markdown 和 baoyu-markdown-to-html 的脚本只做本地处理，使用 `bun` 或 `npx -y bun` 均可，不受网络限制。只有 `wechat-api.ts` 需要网络，必须用 `npx --yes tsx`。
 - **图片路径**：配图使用相对路径引用（`../03-images/`），支持 `.png/.jpg/.jpeg/.webp`，确保 HTML 转换后图片可被 wechat-api.ts 正确上传。
-- **图片格式**：myweb3 的 `b64_json` 输出按 PNG 保存；不要把 PNG 字节保存成 `.jpeg` 后缀。
+- **图片格式**：图片 API 的 `b64_json` 输出按 PNG 保存；不要把 PNG 字节保存成 `.jpeg` 后缀。
 - **首次使用**：需要先通过 baoyu-post-to-wechat skill 完成 API 凭证配置，pipeline 直接复用这份配置。

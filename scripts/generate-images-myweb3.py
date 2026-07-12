@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Generate wewrite-pipeline images through a myweb3-compatible image API."""
+"""Generate wewrite-pipeline images through an OpenAI-compatible image API.
+
+The filename is retained as a backwards-compatible entry point. Configure the
+provider with IMAGE_API_BASE, IMAGE_API_KEY and IMAGE_MODEL instead of relying
+on a particular hosted service.
+"""
 
 from __future__ import annotations
 
@@ -46,6 +51,11 @@ def read_env_file(path: Path) -> dict[str, str]:
 
 def env_value(key: str, env_file: dict[str, str], default: str = "") -> str:
     return os.environ.get(key) or env_file.get(key) or default
+
+
+def image_backend(api_base: str, env_file: dict[str, str]) -> str:
+    """Return a user-configurable label for article metadata."""
+    return env_value("IMAGE_API_BACKEND", env_file) or urllib.parse.urlparse(api_base).netloc or "custom"
 
 
 def normalize_image_size(size: str) -> str:
@@ -97,7 +107,7 @@ def is_retryable_error(exc: Exception) -> bool:
 
 def generate_image(api_base: str, api_key: str, model: str, size: str, prompt: str, retries: int) -> dict[str, Any]:
     if not api_key:
-        raise RuntimeError("Missing IMAGE_API_KEY or MYWEB3_API_KEY")
+        raise RuntimeError("Missing IMAGE_API_KEY (MYWEB3_API_KEY is supported for backwards compatibility)")
     url = f"{api_base.rstrip('/')}/images/generations"
     payload = {"model": model, "prompt": prompt, "n": 1, "size": size}
     headers = {"Authorization": f"Bearer {api_key}"}
@@ -202,6 +212,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-base", default="")
     parser.add_argument("--api-key", default="")
     parser.add_argument("--model", default="")
+    parser.add_argument("--backend", default="", help="Label written to meta.yaml (defaults to IMAGE_API_BACKEND or API host).")
     parser.add_argument("--cover-size", default="")
     parser.add_argument("--image-size", default="")
     parser.add_argument("--retries", type=int, default=2)
@@ -240,6 +251,7 @@ def main() -> int:
     model = args.model or env_value("IMAGE_MODEL", env_file, DEFAULT_MODEL)
     cover_size = normalize_image_size(args.cover_size or env_value("COVER_IMAGE_SIZE", env_file, DEFAULT_COVER_SIZE))
     image_size = normalize_image_size(args.image_size or env_value("ARTICLE_IMAGE_SIZE", env_file, DEFAULT_IMAGE_SIZE))
+    backend = args.backend or image_backend(api_base, env_file)
 
     cover_prompts = [] if args.body_only else prompt_files(article_dir / "02-cover" / "prompts")
     body_prompts = [] if args.cover_only else prompt_files(article_dir / "03-images" / "prompts")
@@ -248,7 +260,7 @@ def main() -> int:
 
     results: dict[str, Any] = {
         "article_dir": str(article_dir),
-        "image_backend": "myweb3",
+        "image_backend": backend,
         "model": model,
         "cover_size": cover_size,
         "image_size": image_size,
@@ -293,13 +305,13 @@ def main() -> int:
                 if not args.cover_only
                 else len([path for path in (article_dir / "03-images").iterdir() if path.suffix.lower() in IMAGE_SUFFIXES])
             ),
-            image_backend="myweb3",
+            image_backend=backend,
             image_model=model,
         )
         print(json.dumps(results, ensure_ascii=False, indent=2))
         return 0
     except Exception as exc:
-        update_meta(article_dir, status="image_failed", image_backend="myweb3", image_error=str(exc))
+        update_meta(article_dir, status="image_failed", image_backend=backend, image_error=str(exc))
         raise
 
 
